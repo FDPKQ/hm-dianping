@@ -18,7 +18,6 @@ import org.springframework.transaction.annotation.Transactional;
 import javax.annotation.Resource;
 
 import java.time.LocalDateTime;
-import java.util.SimpleTimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -44,102 +43,11 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
     @Override
     public Result queryById(Long id) {
-//        Shop shop = cacheClient.queryByIdWithPassThrough(CACHE_SHOP_KEY, id, Shop.class, this::getById, CACHE_SHOP_TTL, TimeUnit.MINUTES);
         Shop shop = cacheClient.queryByIdWithMutex(CACHE_SHOP_KEY, LOCK_SHOP_KEY, id, Shop.class, this::getById, CACHE_SHOP_TTL, TimeUnit.MINUTES);
         if (shop == null) {
             return Result.fail("shop is null");
         }
         return Result.ok(shop);
-    }
-
-
-    public Shop queryByIdMutex(Long id) {
-        String shopJson = stringRedisTemplate.opsForValue().get(CACHE_SHOP_KEY + id);
-
-        if (StrUtil.isNotBlank(shopJson))
-            return JSONUtil.toBean(shopJson, Shop.class);
-
-        // redis hit null
-        if (shopJson != null)
-            return null;
-
-        // mysql query
-        // lock
-        Shop shop = null;
-        String lockKey = LOCK_SHOP_KEY + id;
-        try {
-            boolean isLock = tryLock(lockKey);
-            if (!isLock) {
-                Thread.sleep(50);
-                return queryByIdMutex(id);
-
-            }
-            Thread.sleep(500);
-            shop = getById(id);
-            // mysql hit null
-            if (shop == null) {
-                stringRedisTemplate.opsForValue().set(CACHE_SHOP_KEY + id, "",
-                        CACHE_NULL_TTL, TimeUnit.MINUTES);
-                return null;
-            }
-
-
-            stringRedisTemplate.opsForValue().set(CACHE_SHOP_KEY + id, JSONUtil.toJsonStr(shop),
-                    CACHE_SHOP_TTL, TimeUnit.MINUTES);
-
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
-        } finally {
-            unlock(lockKey);
-        }
-        return shop;
-    }
-
-
-    public Shop queryByIdWithPassThrough(Long id) {
-        String shopJson = stringRedisTemplate.opsForValue().get(CACHE_SHOP_KEY + id);
-
-        if (StrUtil.isNotBlank(shopJson)) {
-            return JSONUtil.toBean(shopJson, Shop.class);
-
-        }
-
-        if (shopJson != null) {
-            return null;
-        }
-
-
-        // mysql query
-        Shop shop = getById(id);
-
-        // set null in redis for id of empty data
-        if (shop == null) {
-            stringRedisTemplate.opsForValue().set(
-                    CACHE_SHOP_KEY + id,
-                    "",
-                    CACHE_NULL_TTL,
-                    TimeUnit.MINUTES);
-            return null;
-        }
-
-
-        stringRedisTemplate.opsForValue().set(
-                CACHE_SHOP_KEY + id,
-                JSONUtil.toJsonStr(shop),
-                CACHE_SHOP_TTL,
-                TimeUnit.MINUTES);
-
-        return shop;
-
-    }
-
-    private boolean tryLock(String key) {
-        Boolean flag = stringRedisTemplate.opsForValue().setIfAbsent(key, "1", LOCK_SHOP_TTL, TimeUnit.SECONDS);
-        return BooleanUtil.isTrue(flag);
-    }
-
-    private void unlock(String key) {
-        stringRedisTemplate.delete(key);
     }
 
 
@@ -166,39 +74,5 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         stringRedisTemplate.opsForValue().set(CACHE_SHOP_KEY + id, JSONUtil.toJsonStr(redisData));
     }
 
-    private final static ExecutorService CACHE_REBUILD_EXECUTOR = Executors.newFixedThreadPool(10);
 
-    public Shop queryByIdWithLogicalExpire(Long id) {
-        String key = CACHE_SHOP_KEY + id;
-        String shopJson = stringRedisTemplate.opsForValue().get(key);
-
-        if (StrUtil.isBlank(shopJson))
-            return null;
-
-        RedisData redisData = JSONUtil.toBean(shopJson, RedisData.class);
-
-        Shop shop = JSONUtil.toBean((JSONObject) redisData.getData(), Shop.class);
-        LocalDateTime expireTime = redisData.getExpireTime();
-        if (expireTime.isAfter(LocalDateTime.now())) {
-            return shop;
-        }
-
-        // expired
-
-        String lockKey = LOCK_SHOP_KEY + id;
-        boolean isLock = tryLock(lockKey);
-        if (isLock) {
-            CACHE_REBUILD_EXECUTOR.submit(() -> {
-                try {
-                    this.saveShop2Redis(id, 20L);
-                } catch (Exception e) {
-                    throw new RuntimeException(e);
-                } finally {
-                    unlock(lockKey);
-                }
-            });
-        }
-        return shop;
-
-    }
 }
