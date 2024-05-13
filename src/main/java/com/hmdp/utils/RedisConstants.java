@@ -23,4 +23,6 @@ public class RedisConstants {
     // My
     public static final String SHOP_TYPE_LIST_KEY = "shop:type:list";
     public static final Long SHOP_TYPE_LIST_KEY_TTL = 30L;
+//    public static final String LOCK_SHOP_TYPE_LIST_KEY = "lock:shop:type";
+//    public static final Long LOCK_SHOP_TYPE_LIST_KEY_TTL = 10L;
 }
