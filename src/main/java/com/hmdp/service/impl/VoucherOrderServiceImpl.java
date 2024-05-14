@@ -1,5 +1,6 @@
 package com.hmdp.service.impl;
 
+import cn.hutool.core.bean.BeanUtil;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.VoucherOrderMapper;
@@ -13,6 +14,7 @@ import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.aop.framework.AopContext;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.data.redis.connection.stream.*;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
@@ -20,7 +22,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.Resource;
+import java.time.Duration;
 import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
@@ -58,7 +63,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         SECKILL_SCRIPT.setResultType(Long.class);
     }
 
-    private final BlockingQueue<VoucherOrder> orderTasks = new ArrayBlockingQueue<>(1024 * 1024);
+
     private final static ExecutorService SECKILL_ORDER_EXECUTOR = Executors.newSingleThreadExecutor();
 
     @PostConstruct
@@ -66,22 +71,88 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         SECKILL_ORDER_EXECUTOR.submit(new VoucherOrderHandler());
     }
 
-
+    //    private final BlockingQueue<VoucherOrder> orderTasks = new ArrayBlockingQueue<>(1024 * 1024);
+//
+//
     private class VoucherOrderHandler implements Runnable {
+
+        private final String queueName = "stream.orders";
 
         @Override
         public void run() {
             while (true) {
                 try {
-                    VoucherOrder take = orderTasks.take();
+                    if (proxy == null) {
+                        try {
+                            Thread.sleep(200);
+                        } catch (InterruptedException interruptedException) {
+                            log.error("sleep: ", interruptedException);
+                        }
+                        continue;
+                    }
+                    List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
+                            Consumer.from("g1", "c1"),
+                            StreamReadOptions.empty().count(1).block(Duration.ofSeconds(2)),
+                            StreamOffset.create(queueName, ReadOffset.lastConsumed())
+                    );
+
+                    if (list == null || list.isEmpty()) {
+                        continue;
+                    }
+
+                    MapRecord<String, Object, Object> record = list.get(0);
+                    Map<Object, Object> value = record.getValue();
+                    VoucherOrder voucherOrder = BeanUtil.fillBeanWithMap(value, new VoucherOrder(), true);
+
                     // add order
-                    handlerVoucherOrder(take);
-                } catch (InterruptedException e) {
+                    handlerVoucherOrder(voucherOrder);
+
+                    // ack
+                    stringRedisTemplate.opsForStream().acknowledge(queueName, "g1", record.getId());
+
+                } catch (Exception e) {
                     log.error("订单处理异常: ", e);
+                    handlerPendingList();
+                }
+            }
+        }
+
+        private void handlerPendingList() {
+            while (true) {
+                try {
+
+                    List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
+                            Consumer.from("g1", "c1"),
+                            StreamReadOptions.empty().count(1),
+                            StreamOffset.create(queueName, ReadOffset.from("0"))
+                    );
+
+                    if (list == null || list.isEmpty()) {
+                        break;
+                    }
+
+                    MapRecord<String, Object, Object> record = list.get(0);
+                    Map<Object, Object> value = record.getValue();
+                    VoucherOrder voucherOrder = BeanUtil.fillBeanWithMap(value, new VoucherOrder(), true);
+
+                    // add order
+                    handlerVoucherOrder(voucherOrder);
+
+                    // ack
+                    stringRedisTemplate.opsForStream().acknowledge(queueName, "g1", record.getId());
+
+                } catch (Exception e) {
+                    log.error("订单pending-list处理异常: ", e);
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException interruptedException) {
+                        log.error("interrupted exception: ", interruptedException);
+                    }
                 }
             }
         }
     }
+
 
     private void handlerVoucherOrder(VoucherOrder voucherOrder) {
         RLock lock = redissonClient.getLock("lock:order:" + voucherOrder.getUserId());
@@ -124,8 +195,6 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         voucherOrder.setId(orderId);
         voucherOrder.setUserId(UserHolder.getUser().getId());
         voucherOrder.setVoucherId(voucherId);
-
-        orderTasks.add(voucherOrder);
 
 
         proxy = (IVoucherOrderService) AopContext.currentProxy();
