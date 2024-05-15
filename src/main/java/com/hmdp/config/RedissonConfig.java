@@ -14,7 +14,6 @@ public class RedissonConfig {
         config.useSingleServer()
                 .setAddress("redis://vm2.lan.luoxianjun.com:6379")
                 .setPassword("password123456");
-
         return Redisson.create(config);
     }
 }
