@@ -20,8 +20,17 @@ spring:
         time-between-eviction-runs: 10s
   jackson:
     default-property-inclusion: non_null # JSON处理时忽略非空字段
+  servlet:
+    multipart:
+      max-file-size: 10MB
 mybatis-plus:
   type-aliases-package: com.hmdp.entity # 别名扫描包
 logging:
   level:
     com.hmdp: debug
+
+minio:
+  endpoint: https://minio.lan.luoxianjun.com
+  accessKey: wLr3WyH7QRkYbmVs83HH
+  secretKey: hgAwbBTGD2wcLmDCklVPIibK1qSg2F4V81pCiq11
+
